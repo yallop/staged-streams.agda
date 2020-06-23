@@ -121,23 +121,42 @@ module Tests ⦃ _ : CWithExtras ⦄ where
         ▹ flatmap (λ a → 10K ▹ map (λ b → a + b))
         ▹ take ⟪ + 20000000 ⟫)
 
+print-c-decl : (α : c_type) → (String → (ℕ → ℕ × String)) → (ℕ → ℕ × String)
+print-c-decl α f n =
+  let ref = "x" ++ ℕs.show n in
+  let n , f = f ref (ℕ.suc n) in
+    n , builder α ref ++ ";\n" ++ f
+  where
+    builder : c_type → String → String
+    builder Int acc = "int64_t " ++ acc
+    builder Bool acc = "/* BOOL */ int " ++ acc
+    builder (Array α n) acc = builder α (acc ++ "[" ++ ℕs.show n ++ "]")
+
 AST-CWithExtras : CWithExtras
-CWithExtras.ℐ AST-CWithExtras = Print-C
+CWithExtras.ℐ AST-CWithExtras = record Print-C {
+    -- the first few fields are here because Agda complains about
+    -- unsolved metas for the implicit arguments if they're copied
+    -- over implicitly
+    _[_] = λ {c n} → C._[_] Print-C {c} {n};
+    ★_ = λ {α} → C.★_ Print-C {α};
+    _⁇_∷_ = λ {α} → C._⁇_∷_ Print-C {α};
+    _≔_ = λ {α} → C._≔_ Print-C {α};
+    decl = print-c-decl
+ }
 CWithExtras.declBigInt AST-CWithExtras f n =
   let ref = "x" ++ ℕs.show n in
   let n , f = f ref (ℕ.suc n) in
-    n , "long long int " ++ ref ++ ";\n" ++ f
+    n , "int64_t " ++ ref ++ ";\n" ++ f
 CWithExtras.printInt AST-CWithExtras e n = n , "printf(\"%d\\n\", " ++ e ++ ");\n"
 CWithExtras.printBigInt AST-CWithExtras e n = n , "printf(\"%lld\\n\", " ++ e ++ ");\n"
 
 benchmark-function : String → (∀ ⦃ _ : CWithExtras ⦄ → Statement) → String
 benchmark-function name body =
-  "#if BENCHMARK_" ++ name ++ "\n"
-  ++ "int main(void){\n"
+  "int64_t " ++ name ++ "(void)\n"
+    ++ "{\n"
     ++ proj₂ (body ⦃ AST-CWithExtras ⦄ 0)
-    ++ "return 0;\n"
+    ++ "return x0;\n"
   ++ "}\n"
-  ++ "#endif\n\n"
 
 main =
   run (IO.putStr ex)
@@ -146,6 +165,7 @@ main =
     ex =
       "#include <stdio.h>\n"
       ++ "#include <stdlib.h>\n"
+      ++ "#include <stdint.h>\n"
       ++ (benchmark-function "sum" Tests.sum)
       ++ (benchmark-function "sumOfSquares" Tests.sumOfSquares)
       ++ (benchmark-function "sumOfSquaresEven" Tests.sumOfSquaresEven)
