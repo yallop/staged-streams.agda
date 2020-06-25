@@ -1,32 +1,18 @@
 open import C.Base
 open import C.Extras
 open import Data.Integer as ℤ using (+_)
-open import Data.List as List using (List ; _∷_ ; [])
-open import Data.Maybe as Maybe using (Maybe ; just ; nothing)
 open import Data.Nat as ℕ using (ℕ)
 open import Data.Product as Product using (_×_ ; _,_ ; proj₁ ; proj₂)
 open import Data.String as String using (String ; _++_)
-open import Data.Vec as Vec using (Vec ; _∷_ ; [])
 open import IO
 open import Print.Print
 open import Streams
 
 import Data.Nat.Show as ℕs
-import Data.Fin as Fin
-import Data.Nat.DivMod as ℕ÷
 
 module Benchmark where
 
-record CWithExtras : Set₁ where
-  field
-    ⦃ ℐ ⦄ : C
-    declBigInt : (C.Ref ℐ Int → C.Statement ℐ) → C.Statement ℐ
-    printInt : C.Expr ℐ Int → C.Statement ℐ
-    printBigInt : C.Expr ℐ Int → C.Statement ℐ
-
 open C ⦃ ... ⦄
-open CWithExtras ⦃ ... ⦄
-
 -- Kiselyov et al., Section §7:
 --
 -- - sum: the simplest of_arr arr ▹ sum pipeline, summing the elements of an array;
@@ -40,77 +26,94 @@ open CWithExtras ⦃ ... ⦄
 -- - zipWithafterflatMap: zip_with of two streams one of whichis the result of flat_map;
 -- - flatmaptake: flat_map followed by take"
 --
--- Input: All tests were run with the same input set. For the sum, sumOfSquares, sumOfSquaresEven, maps, filters we used an array of N = 100,000,000 small integers: xᵢ = i mod 10. The cart test iterates over two arrays. An outer one of 10,000,000 integers and an inner one of 10. For the dotProduct we used 10,000,000 integers, for the flatMap_after_zipWith 10,000, for the zipWith_after_flatMap 10,000,000 and for the flatmap_take N numbers sub-sized by 20% of N."
+-- Input: All tests were run with the same input set. For the sum,
+-- sumOfSquares, sumOfSquaresEven, maps, filters we used an array of N
+-- 100,000,000 small integers: xᵢ = i mod 10. The cart test iterates
+-- over two arrays. An outer one of 10,000,000 integers and an inner
+-- one of 10. For the dotProduct we used 10,000,000 integers, for the
+-- flatMap_after_zipWith 10,000, for the zipWith_after_flatMap
+-- 10,000,000 and for the flatmap_take N numbers sub-sized by 20% of
+-- N."
 
-module Tests ⦃ _ : CWithExtras ⦄ where
-  sum : Ref (Array Int 1000000000) → Ref Int → Statement
+
+module Tests ⦃ _ : C ⦄ where
+  one-hole-context = Ref Int → Statement
+  one-arr-test = Ref (Array Int 1000000000) → Ref Int → one-hole-context
+  two-arr-test = Ref (Array Int 1000000000) → Ref Int → one-arr-test
+  of-arr[_] : Ref Int → Ref (Array Int 1000000000) → Stream Int
+  of-arr[_] len arr = take (★ len) (ofArr arr)
+
+  sum : one-arr-test
   sum arr len =
-    declBigInt λ r →
-    r ← fold _+_ ⟪ + 0 ⟫ (take (★ len) (ofArr arr)) ；
-    printBigInt (★ r)
+    of-arr[ len ] arr
+    ▹ fold _+_ ⟪ + 0 ⟫ 
 
-  sumOfSquares : Ref (Array Int 1000000000) → Ref Int → Statement
+  sumOfSquares : one-arr-test
   sumOfSquares arr len =
-    declBigInt λ r →
-    r ← fold _+_ ⟪ + 0 ⟫
-      ((take (★ len) (ofArr arr)) ▹ map (λ a → a * a)) ；
-    printBigInt (★ r)
+    of-arr[ len ] arr
+    ▹ map (λ x → x * x)
+    ▹ fold _+_ ⟪ + 0 ⟫ 
 
-  sumOfSquaresEven : Ref (Array Int 1000000000) → Ref Int → Statement
+  sumOfSquaresEven : one-arr-test
   sumOfSquaresEven arr len =
-    declBigInt λ r →
-    r ← fold _+_ ⟪ + 0 ⟫
-      ((take (★ len) (ofArr arr))
-        ▹ filter (λ e → (e % ⟪ + 2 ⟫) == ⟪ + 0 ⟫)
-        ▹ map (λ a → a * a)) ；
-    printBigInt (★ r)
+    of-arr[ len ] arr
+    ▹ filter (λ x → (x % ⟪ + 2 ⟫) == ⟪ + 0 ⟫)
+    ▹ map (λ x → x * x)
+    ▹ fold _+_ ⟪ + 0 ⟫
 
-  -- Sum over Cartesian-/outer-product
-  cart : Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement
+  cart : two-arr-test
   cart arr₁ len₁ arr₂ len₂ =
-    declBigInt λ r →
-    r ← fold _+_ ⟪ + 0 ⟫
-      ((take (★ len₁) (ofArr arr₁)) ▹ flatmap (λ i → (take (★ len₂) (ofArr arr₂)) ▹ map (λ j → i * j))) ；
-    printBigInt (★ r)
+         of-arr[ len₁ ] arr₁
+       ▹ flatmap (λ x → of-arr[ len₂ ] arr₂
+                         ▹ map (λ y → x * y))
+       ▹ fold _+_ ⟪ + 0 ⟫
 
-  maps : Ref (Array Int 1000000000) → Ref Int → Statement
+  maps : one-arr-test
   maps arr len =
-    iter (λ e → printInt e)
-      ((take (★ len) (ofArr arr))
-        ▹ map (λ e → e * ⟪ + 2 ⟫)
-        ▹ map (λ e → e * ⟪ + 3 ⟫))
+     of-arr[ len ] arr
+      ▹ map (λ x → x * ⟪ + 1 ⟫)
+      ▹ map (λ x → x * ⟪ + 2 ⟫)
+      ▹ map (λ x → x * ⟪ + 3 ⟫)
+      ▹ map (λ x → x * ⟪ + 4 ⟫)
+      ▹ map (λ x → x * ⟪ + 5 ⟫)
+      ▹ map (λ x → x * ⟪ + 6 ⟫)
+      ▹ map (λ x → x * ⟪ + 7 ⟫)
+      ▹ fold _+_ ⟪ + 0 ⟫
 
-  filters : Ref (Array Int 1000000000) → Ref Int → Statement
+  filters : one-arr-test
   filters arr len =
-    iter (λ e → printInt e)
-      ((take (★ len) (ofArr arr))
-        ▹ filter (λ e → ! ((e % ⟪ + 5 ⟫) == ⟪ + 0 ⟫))
-        ▹ filter (λ e → ! ((e % ⟪ + 8 ⟫) == ⟪ + 0 ⟫)))
+      of-arr[ len ] arr
+        ▹ filter (λ x → x > ⟪ + 1 ⟫)
+        ▹ filter (λ x → x > ⟪ + 2 ⟫)
+        ▹ filter (λ x → x > ⟪ + 3 ⟫)
+        ▹ filter (λ x → x > ⟪ + 4 ⟫)
+        ▹ filter (λ x → x > ⟪ + 5 ⟫)
+        ▹ filter (λ x → x > ⟪ + 6 ⟫)
+        ▹ filter (λ x → x > ⟪ + 7 ⟫)
+        ▹ fold _+_ ⟪ + 0 ⟫
 
-  dotProduct : Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement
+  dotProduct : two-arr-test
   dotProduct arr₁ len₁ arr₂ len₂ =
-    declBigInt λ r →
-    r ← fold _+_ ⟪ + 0 ⟫
-      (zipWith (λ i j → i * j) (take (★ len₁) (ofArr arr₁)) (take (★ len₂) (ofArr arr₂)) {ℕ.z≤n}) ；
-    printBigInt (★ r)
+      zipWith _*_ (of-arr[ len₁ ] arr₁) (of-arr[ len₂ ] arr₂) {ℕ.z≤n}
+      ▹ fold _+_ ⟪ + 0 ⟫
 
-  flatmap-after-zipWith : Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement
+  flatmap-after-zipWith : two-arr-test
   flatmap-after-zipWith arr₁ len₁ arr₂ len₂ =
-    iter (λ e → printInt e)
-      (zipWith _+_ (take (★ len₁) (ofArr arr₁)) (take (★ len₁) (ofArr arr₁)) {ℕ.z≤n}
-        ▹ flatmap (λ i → (take (★ len₂) (ofArr arr₂)) ▹ map (λ j → i * j)))
+    zipWith _+_ (of-arr[ len₁ ] arr₁) (of-arr[ len₁ ] arr₁) {ℕ.z≤n}
+        ▹ flatmap (λ x → of-arr[ len₂ ] arr₂ ▹ map (λ el → el * x))
+        ▹ fold _+_ ⟪ + 0 ⟫
 
-  zipWith-after-flatmap : Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement
+  zipWith-after-flatmap : two-arr-test
   zipWith-after-flatmap arr₁ len₁ arr₂ len₂ =
-    iter (λ e → printInt e)
-      (zipWith _+_ (take (★ len₁) (ofArr arr₁)) (flatmap (λ e → (take (★ len₂) (ofArr arr₂)) ▹ map (λ a → a + e)) (take (★ len₁) (ofArr arr₁))) {ℕ.s≤s ℕ.z≤n})
+     (zipWith _+_ (of-arr[ len₁ ] arr₁) (flatmap (λ e → of-arr[ len₂ ] arr₂ ▹ map (λ a → a + e)) (of-arr[ len₁ ] arr₁)) {ℕ.s≤s ℕ.z≤n})
+      ▹ fold _+_ ⟪ + 0 ⟫
 
-  flatmap-take : Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement
+  flatmap-take : two-arr-test
   flatmap-take arr₁ len₁ arr₂ len₂ =
-    iter (λ e → printInt e)
-      ((take (★ len₁) (ofArr arr₁))
-        ▹ flatmap (λ a → (take (★ len₂) (ofArr arr₂)) ▹ map (λ b → a + b))
-        ▹ take ⟪ + 20000000 ⟫)
+      of-arr[ len₁ ] arr₁
+      ▹ flatmap (λ x → of-arr[ len₂ ] arr₂ ▹ map (λ y → x + y))
+      ▹ take ⟪ + 20000000 ⟫
+      ▹ fold _+_ ⟪ + 0 ⟫
 
 print-c-decl : (α : c_type) → (String → (ℕ → ℕ × String)) → (ℕ → ℕ × String)
 print-c-decl α f n =
@@ -123,55 +126,49 @@ print-c-decl α f n =
     builder Bool acc = "/* BOOL */ int " ++ acc
     builder (Array α n) acc = builder α (acc ++ "[" ++ ℕs.show n ++ "]")
 
-AST-CWithExtras : CWithExtras
-CWithExtras.ℐ AST-CWithExtras = record Print-C {
-    -- the first few fields are here because Agda complains about
-    -- unsolved metas for the implicit arguments if they're copied
-    -- over implicitly
+-- like Print-C but use int64_t for integers
+Print-C' : C
+Print-C' = record Print-C {
+    -- we just want to override 'decl'; the other fields are here
+    -- because Agda complains about unsolved metas for the implicit
+    -- arguments if they're copied over implicitly
     _[_] = λ {c n} → C._[_] Print-C {c} {n};
     ★_ = λ {α} → C.★_ Print-C {α};
     _⁇_∷_ = λ {α} → C._⁇_∷_ Print-C {α};
     _≔_ = λ {α} → C._≔_ Print-C {α};
     decl = print-c-decl
  }
-CWithExtras.declBigInt AST-CWithExtras f n =
-  let ref = "x" ++ ℕs.show n in
-  let n , f = f ref (ℕ.suc n) in
-    n , "int64_t " ++ ref ++ ";\n" ++ f
-CWithExtras.printInt AST-CWithExtras e n = n , "printf(\"%d\\n\", " ++ e ++ ");\n"
-CWithExtras.printBigInt AST-CWithExtras e n = n , "printf(\"%lld\\n\", " ++ e ++ ");\n"
 
-benchmark-function : String → (∀ ⦃ _ : CWithExtras ⦄ → Ref (Array Int 1000000000) → Ref Int → Statement) → String
+benchmark-function : String → (⦃ _ : C ⦄ → Tests.one-arr-test) → String
 benchmark-function name body =
   "int64_t " ++ name ++ "(int64_t *arr, int64_t len)\n"
     ++ "{\n"
-    ++ proj₂ (body ⦃ AST-CWithExtras ⦄ "arr" "len" 0)
-    ++ "return x0;\n"
+    ++ "int64_t rv;\n"
+    ++ proj₂ (body ⦃ Print-C' ⦄ "arr" "len" "rv" 0)
+    ++ "return rv;\n"
   ++ "}\n"
 
-benchmark-function2 : String → (∀ ⦃ _ : CWithExtras ⦄ → Ref (Array Int 1000000000) → Ref Int → Ref (Array Int 1000000000) → Ref Int → Statement) → String
-benchmark-function2 name body =
+benchmark-function-2 : String → (⦃ _ : C ⦄ → Tests.two-arr-test) → String
+benchmark-function-2 name body =
   "int64_t " ++ name ++ "(int64_t *arr1, int64_t len1, int64_t *arr2, int64_t len2)\n"
     ++ "{\n"
-    ++ proj₂ (body ⦃ AST-CWithExtras ⦄ "arr1" "len1" "arr2" "len2" 0)
-    ++ "return x0;\n"
+    ++ "int64_t rv;\n"
+    ++ proj₂ (body ⦃ Print-C' ⦄ "arr1" "len1" "arr2" "len2" "rv" 0)
+    ++ "return rv;\n"
   ++ "}\n"
 
 main =
   run (IO.putStr ex)
   where
     ex : String
-    ex =
-      "#include <stdio.h>\n"
-      ++ "#include <stdlib.h>\n"
-      ++ "#include <stdint.h>\n"
-      ++ (benchmark-function "sum" Tests.sum)
-      ++ (benchmark-function "sumOfSquares" Tests.sumOfSquares)
-      ++ (benchmark-function "sumOfSquaresEven" Tests.sumOfSquaresEven)
-      ++ (benchmark-function2 "cart" Tests.cart)
-      ++ (benchmark-function "maps" Tests.maps)
-      ++ (benchmark-function "filters" Tests.filters)
-      ++ (benchmark-function2 "dotProduct" Tests.dotProduct)
-      ++ (benchmark-function2 "flatmap_after_zipWith" Tests.flatmap-after-zipWith)
-      ++ (benchmark-function2 "zipWith_after_flatmap" Tests.zipWith-after-flatmap)
-      ++ (benchmark-function2 "flatmap_take" Tests.flatmap-take)
+    ex = "#include <stdint.h>\n"
+      ++ (benchmark-function   "sum" Tests.sum)
+      ++ (benchmark-function   "sumOfSquares" Tests.sumOfSquares)
+      ++ (benchmark-function   "sumOfSquaresEven" Tests.sumOfSquaresEven)
+      ++ (benchmark-function-2 "cart" Tests.cart)
+      ++ (benchmark-function   "maps" Tests.maps)
+      ++ (benchmark-function   "filters" Tests.filters)
+      ++ (benchmark-function-2 "dotProduct" Tests.dotProduct)
+      ++ (benchmark-function-2 "flatmap_after_zipWith" Tests.flatmap-after-zipWith)
+      ++ (benchmark-function-2 "zipWith_after_flatmap" Tests.zipWith-after-flatmap)
+      ++ (benchmark-function-2 "flatmap_take" Tests.flatmap-take)
